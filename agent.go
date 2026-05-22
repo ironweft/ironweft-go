@@ -78,6 +78,18 @@ func (a *AgentHandle) Check(ctx context.Context, action, credential, resource st
 	}
 }
 
+// Batch evaluates multiple actions in a single request.
+// Cached allow decisions are served locally; uncached actions are bundled into
+// one POST /authorize/batch call. Returns the full batch response.
+//
+// POST /authorize/batch
+func (a *AgentHandle) Batch(ctx context.Context, credential string, actions []BatchAuthorizeItem) (*BatchAuthorizeResponse, error) {
+	return a.client.AuthorizeBatch(ctx, BatchAuthorizeRequest{
+		Credential: credential,
+		Actions:    actions,
+	})
+}
+
 // Gate returns a closure that, when invoked, issues a fresh credential, calls
 // /authorize, and — only on an "allow" decision — calls fn. Any error from
 // credential issuance, the authorization check, or fn itself is returned.

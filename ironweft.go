@@ -27,6 +27,7 @@ type Client struct {
 	apiKey     string
 	baseURL    string
 	httpClient *http.Client
+	cache      *AuthCache
 }
 
 // Option is a functional option for configuring a Client.
@@ -48,6 +49,18 @@ func WithHTTPClient(hc *http.Client) Option {
 	}
 }
 
+// WithCache controls whether allow decisions are cached in-process.
+// The cache is enabled by default; pass WithCache(false) to disable it.
+func WithCache(enabled bool) Option {
+	return func(c *Client) {
+		if enabled {
+			c.cache = newAuthCache()
+		} else {
+			c.cache = nil
+		}
+	}
+}
+
 // New creates a new Client authenticated with apiKey.
 // Additional behaviour can be configured via Option values.
 //
@@ -61,6 +74,7 @@ func New(apiKey string, opts ...Option) *Client {
 		httpClient: &http.Client{
 			Timeout: 15 * time.Second,
 		},
+		cache: newAuthCache(),
 	}
 	for _, o := range opts {
 		o(c)
@@ -198,16 +212,150 @@ func (c *Client) DelegateAgent(ctx context.Context, parentAgentID string, req De
 // ── Authorize ─────────────────────────────────────────────────────────────────
 
 // Authorize evaluates an agent credential against a policy and returns the
-// authorization decision.
+// authorization decision. Allow decisions are cached in-process (TTL = credential
+// expiry). Call InvalidateCache to evict after a policy change.
 //
-// POST /authorize — does NOT send the Authorization header; authentication is
-// carried by the JWT credential in the request body.
+// POST /authorize
 func (c *Client) Authorize(ctx context.Context, req AuthorizeRequest) (*AuthorizeResponse, error) {
+	params := req.Parameters
+	if params == nil {
+		params = map[string]interface{}{}
+	}
+	if c.cache != nil {
+		if cached, ok := c.cache.Get(req.Credential, req.Action, req.Resource, params); ok {
+			return cached, nil
+		}
+	}
+
 	var resp AuthorizeResponse
-	if err := c.do(ctx, http.MethodPost, "/authorize", req, &resp, true); err != nil {
+	if err := c.do(ctx, http.MethodPost, "/authorize", req, &resp, false); err != nil {
 		return nil, err
 	}
+
+	if c.cache != nil && resp.Decision == "allow" {
+		c.cache.Set(req.Credential, req.Action, req.Resource, params, &resp)
+	}
 	return &resp, nil
+}
+
+// AuthorizeBatch evaluates up to 50 actions in a single request.
+// Cached allow decisions are served locally; uncached actions are bundled
+// into one POST /authorize/batch call.
+//
+// POST /authorize/batch
+func (c *Client) AuthorizeBatch(ctx context.Context, req BatchAuthorizeRequest) (*BatchAuthorizeResponse, error) {
+	if len(req.Actions) == 0 {
+		return &BatchAuthorizeResponse{Results: []BatchResultItem{}, Summary: BatchSummary{}}, nil
+	}
+
+	results := make([]*BatchResultItem, len(req.Actions))
+	var uncachedIdx []int
+
+	if c.cache != nil {
+		for i, a := range req.Actions {
+			params := a.Parameters
+			if params == nil {
+				params = map[string]interface{}{}
+			}
+			if cached, ok := c.cache.Get(req.Credential, a.Action, a.Resource, params); ok {
+				r := &BatchResultItem{
+					Ref:      a.Ref,
+					Action:   a.Action,
+					Decision: cached.Decision,
+					Reason:   cached.Reason,
+					Cached:   true,
+				}
+				if cached.AuditEventID != "" {
+					s := cached.AuditEventID
+					r.AuditEventID = &s
+				}
+				results[i] = r
+			} else {
+				uncachedIdx = append(uncachedIdx, i)
+			}
+		}
+	} else {
+		for i := range req.Actions {
+			uncachedIdx = append(uncachedIdx, i)
+		}
+	}
+
+	if len(uncachedIdx) > 0 {
+		batchActions := make([]BatchAuthorizeItem, len(uncachedIdx))
+		for j, i := range uncachedIdx {
+			batchActions[j] = req.Actions[i]
+		}
+
+		var resp BatchAuthorizeResponse
+		if err := c.do(ctx, http.MethodPost, "/authorize/batch", BatchAuthorizeRequest{
+			Credential: req.Credential,
+			Actions:    batchActions,
+		}, &resp, false); err != nil {
+			return nil, err
+		}
+
+		for j, i := range uncachedIdx {
+			r := resp.Results[j]
+			results[i] = &r
+			if c.cache != nil && r.Decision == "allow" {
+				a := req.Actions[i]
+				params := a.Parameters
+				if params == nil {
+					params = map[string]interface{}{}
+				}
+				auditID := ""
+				if r.AuditEventID != nil {
+					auditID = *r.AuditEventID
+				}
+				c.cache.Set(req.Credential, a.Action, a.Resource, params, &AuthorizeResponse{
+					Decision:     r.Decision,
+					Reason:       r.Reason,
+					AuditEventID: auditID,
+				})
+			}
+		}
+	}
+
+	var final []BatchResultItem
+	for _, r := range results {
+		if r != nil {
+			final = append(final, *r)
+		}
+	}
+	if final == nil {
+		final = []BatchResultItem{}
+	}
+
+	allow, deny, challenge := 0, 0, 0
+	for _, r := range final {
+		switch r.Decision {
+		case "allow":
+			allow++
+		case "deny":
+			deny++
+		case "challenge":
+			challenge++
+		}
+	}
+
+	return &BatchAuthorizeResponse{
+		Results: final,
+		Summary: BatchSummary{Total: len(final), Allow: allow, Deny: deny, Challenge: challenge},
+	}, nil
+}
+
+// InvalidateCache evicts cached decisions. Pass a credential to evict only that
+// credential's entries (e.g. after a policy-change webhook). Pass an empty string
+// to clear all cached decisions.
+func (c *Client) InvalidateCache(credential string) {
+	if c.cache == nil {
+		return
+	}
+	if credential != "" {
+		c.cache.InvalidateCredential(credential)
+	} else {
+		c.cache.Clear()
+	}
 }
 
 // ── Audit ─────────────────────────────────────────────────────────────────────

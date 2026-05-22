@@ -90,6 +90,49 @@ type AuthorizeResponse struct {
 	Reason        string   `json:"reason"`
 	AllowedScopes []string `json:"allowed_scopes"`
 	AuditEventID  string   `json:"audit_event_id"`
+	// Cached is set by the SDK cache; never serialized.
+	Cached bool `json:"-"`
+}
+
+// BatchAuthorizeItem is a single action within a batch authorize request.
+type BatchAuthorizeItem struct {
+	Action     string                 `json:"action"`
+	Resource   string                 `json:"resource,omitempty"`
+	Parameters map[string]interface{} `json:"parameters,omitempty"`
+	Context    map[string]interface{} `json:"context,omitempty"`
+	Initiator  *string                `json:"initiator,omitempty"`
+	// Ref is an optional caller-supplied ID echoed back in the result.
+	Ref *string `json:"ref,omitempty"`
+}
+
+// BatchAuthorizeRequest is the request body for POST /authorize/batch.
+type BatchAuthorizeRequest struct {
+	Credential string               `json:"credential"`
+	Actions    []BatchAuthorizeItem `json:"actions"`
+}
+
+// BatchResultItem is a single result within a batch authorize response.
+type BatchResultItem struct {
+	Ref          *string `json:"ref"`
+	Action       string  `json:"action"`
+	Decision     string  `json:"decision"`
+	Reason       string  `json:"reason"`
+	AuditEventID *string `json:"audit_event_id"`
+	Cached       bool    `json:"-"`
+}
+
+// BatchSummary summarizes the decisions in a batch response.
+type BatchSummary struct {
+	Total     int `json:"total"`
+	Allow     int `json:"allow"`
+	Deny      int `json:"deny"`
+	Challenge int `json:"challenge"`
+}
+
+// BatchAuthorizeResponse is the response body from POST /authorize/batch.
+type BatchAuthorizeResponse struct {
+	Results []BatchResultItem `json:"results"`
+	Summary BatchSummary      `json:"summary"`
 }
 
 // LogAuditRequest is the request body for POST /audit/log.
