@@ -1,3 +1,3 @@
-module github.com/EmohSenoon/ironweft-go
+module github.com/ironweft/ironweft-go
 
 go 1.21

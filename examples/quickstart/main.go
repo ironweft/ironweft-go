@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"os"
 
-	ironweft "github.com/EmohSenoon/ironweft-go"
+	ironweft "github.com/ironweft/ironweft-go"
 )
 
 func main() {

@@ -10,7 +10,7 @@ Go SDK for the [IronWeft](https://ironweft.io) Agent IAM API.
 ## Install
 
 ```bash
-go get github.com/EmohSenoon/ironweft-go
+go get github.com/ironweft/ironweft-go
 ```
 
 Requires Go 1.21 or later.
@@ -25,7 +25,7 @@ import (
     "errors"
     "fmt"
 
-    ironweft "github.com/EmohSenoon/ironweft-go"
+    ironweft "github.com/ironweft/ironweft-go"
 )
 
 func main() {
